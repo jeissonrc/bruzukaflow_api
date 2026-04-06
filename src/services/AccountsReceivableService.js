@@ -1,0 +1,319 @@
+const AccountsReceivable = require('../models/AccountsReceivable');
+const OriginAccount = require('../models/OriginAccount');
+const AccountType = require('../models/AccountType');
+const PaymentType = require('../models/PaymentType');
+const sequelize = require('../config/database');
+const { Op } = require('sequelize');
+
+class AccountsReceivableService {
+
+  async getAll() {
+    return await AccountsReceivable.findAll({
+      include: [
+        { model: AccountType, as: 'accountType' },
+        { model: PaymentType, as: 'paymentType' }
+      ]
+    });
+  }
+
+  async getOne(id) {
+    return await AccountsReceivable.findByPk(id, {
+      include: [
+        { model: AccountType, as: 'accountType' },
+        { model: PaymentType, as: 'paymentType' }
+      ]
+    });
+  }
+
+  // -------------------------------------------------------
+  // SEARCH (igual ao contas a pagar)
+  // -------------------------------------------------------
+  async search(filters) {
+    const where = {};
+
+    // pago ou pendente
+    if (filters.status === 'paid') where.paid = true;
+    if (filters.status === 'pending') where.paid = false;
+
+    // Tipo pagamento
+    if (filters.paymentTypeId) where.paymentTypeId = filters.paymentTypeId;
+
+    // Origem
+    if (filters.originId) where.originId = filters.originId;
+
+    // Data dinâmica
+    if (filters.dateField && (filters.dateFrom || filters.dateTo)) {
+      where[filters.dateField] = {};
+
+      if (filters.dateFrom)
+        where[filters.dateField][Op.gte] = new Date(filters.dateFrom);
+
+      if (filters.dateTo)
+        where[filters.dateField][Op.lte] = new Date(filters.dateTo);
+    }
+
+    // Ordenação
+    const order = [];
+
+    if (filters.orderBy) {
+      order.push([
+        filters.orderBy,
+        filters.orderDirection?.toUpperCase() === 'DESC' ? 'DESC' : 'ASC'
+      ]);
+    } else {
+      order.push(['dueDate', 'ASC']);
+    }
+
+    return await AccountsReceivable.findAll({ where, order });
+  }
+
+  // --------------------------------------------------------
+  // CREATE NORMAL
+  // --------------------------------------------------------
+  async create(data) {
+    if (!data.accountTypeId || !data.value) {
+      const err = new Error('accountTypeId and value are required');
+      err.status = 400;
+      throw err;
+    }
+
+    const at = await AccountType.findByPk(data.accountTypeId);
+    if (!at) {
+      const err = new Error('Account type not found');
+      err.status = 404;
+      throw err;
+    }
+
+    if (data.paymentTypeId) {
+      const pt = await PaymentType.findByPk(data.paymentTypeId);
+      if (!pt) {
+        const err = new Error('Payment type not found');
+        err.status = 404;
+        throw err;
+      }
+    }
+
+    return await AccountsReceivable.create({
+      accountTypeId: data.accountTypeId,
+      nominalDate: data.nominalDate || null,
+      dueDate: data.dueDate || null,
+      paymentDate: null,
+      paymentTypeId: data.paymentTypeId || null,
+      documentNumber: data.documentNumber || null,
+      description: data.description || null,
+      value: data.value,
+      paid: data.paid ? true : false,
+      originId: data.originId || null
+    });
+  }
+
+  // --------------------------------------------------------
+  // CREATE MULTIPLE
+  // --------------------------------------------------------
+  async createMultipleFromOrigin(originId, baseData) {
+    const origin = await OriginAccount.findByPk(originId);
+    if (!origin) {
+      const err = new Error('Origin not found');
+      err.status = 404;
+      throw err;
+    }
+
+    const { installments, nominalDate, dueDate, value, accountTypeId, paymentTypeId, description, documentNumber } = baseData;
+
+    if (!installments || installments < 1) {
+      const err = new Error('installments must be >= 1');
+      err.status = 400;
+      throw err;
+    }
+
+    if (!accountTypeId || !value) {
+      const err = new Error('accountTypeId and value are required');
+      err.status = 400;
+      throw err;
+    }
+
+    const at = await AccountType.findByPk(accountTypeId);
+    if (!at) {
+      const err = new Error('Account type not found');
+      err.status = 404;
+      throw err;
+    }
+
+    if (paymentTypeId) {
+      const pt = await PaymentType.findByPk(paymentTypeId);
+      if (!pt) {
+        const err = new Error('Payment type not found');
+        err.status = 404;
+        throw err;
+      }
+    }
+
+    const raw = parseFloat(value);
+    const per = Math.floor((raw / installments) * 100) / 100;
+    const remainder = Math.round((raw - per * installments) * 100) / 100;
+
+    const created = [];
+
+    await sequelize.transaction(async (t) => {
+      for (let i = 0; i < installments; i++) {
+        const nominal = nominalDate ? new Date(nominalDate) : new Date();
+        nominal.setMonth(nominal.getMonth() + i);
+
+        const due = dueDate ? new Date(dueDate) : new Date();
+        due.setMonth(due.getMonth() + i);
+
+        const installmentValue = i === installments - 1 ? per + remainder : per;
+
+        const baseDesc = description || origin.Descricao || origin.description || '';
+        const finalDesc = `${baseDesc} - ${i + 1}/${installments} (Origem: Código ${originId})`;
+
+        const doc = documentNumber
+          ? `${documentNumber} - ${i + 1}/${installments}`
+          : null;
+
+        const acc = await AccountsReceivable.create(
+          {
+            accountTypeId,
+            nominalDate: nominal,
+            dueDate: due,
+            paymentDate: null,
+            paymentTypeId: paymentTypeId || null,
+            documentNumber: doc,
+            description: finalDesc.trim(),
+            value: installmentValue,
+            paid: false,
+            originId: originId
+          },
+          { transaction: t }
+        );
+
+        created.push(acc);
+      }
+    });
+
+    return created;
+  }
+
+  // --------------------------------------------------------
+  // UPDATE NORMAL
+  // --------------------------------------------------------
+  async update(id, data) {
+    const acc = await AccountsReceivable.findByPk(id);
+    if (!acc) {
+      const err = new Error('AccountsReceivable not found');
+      err.status = 404;
+      throw err;
+    }
+
+    if (acc.paid) {
+      const err = new Error('Cannot update a received receivable');
+      err.status = 400;
+      throw err;
+    }
+
+    if (data.accountTypeId) {
+      const at = await AccountType.findByPk(data.accountTypeId);
+      if (!at) {
+        const err = new Error('Account type not found');
+        err.status = 404;
+        throw err;
+      }
+    }
+
+    if (data.paymentTypeId) {
+      const pt = await PaymentType.findByPk(data.paymentTypeId);
+      if (!pt) {
+        const err = new Error('Payment type not found');
+        err.status = 404;
+        throw err;
+      }
+    }
+
+    await acc.update({
+      accountTypeId: data.accountTypeId ?? acc.accountTypeId,
+      nominalDate: data.nominalDate ?? acc.nominalDate,
+      dueDate: data.dueDate ?? acc.dueDate,
+      paymentDate: data.paymentDate ?? acc.paymentDate,
+      paymentTypeId: data.paymentTypeId ?? acc.paymentTypeId,
+      documentNumber: data.documentNumber ?? acc.documentNumber,
+      description: data.description ?? acc.description,
+      value: data.value ?? acc.value,
+      originId: data.originId ?? acc.originId
+    });
+
+    return acc;
+  }
+
+  async remove(id) {
+    const acc = await AccountsReceivable.findByPk(id);
+    if (!acc) {
+      const err = new Error('AccountsReceivable not found');
+      err.status = 404;
+      throw err;
+    }
+
+    if (acc.paid) {
+      const err = new Error('Received receivables cannot be deleted. Please unreceive first.');
+      err.status = 400;
+      throw err;
+    }
+
+    await acc.destroy();
+    return { message: 'Account receivable deleted successfully' };
+  }
+
+  async markAsReceived(id, { paymentTypeId }) {
+    const acc = await AccountsReceivable.findByPk(id);
+    if (!acc) {
+      const err = new Error('AccountsReceivable not found');
+      err.status = 404;
+      throw err;
+    }
+
+    if (acc.paid) {
+      const err = new Error('This receivable is already received');
+      err.status = 400;
+      throw err;
+    }
+
+    if (paymentTypeId) {
+      const pt = await PaymentType.findByPk(paymentTypeId);
+      if (!pt) {
+        const err = new Error('PaymentType not found');
+        err.status = 404;
+        throw err;
+      }
+      acc.paymentTypeId = paymentTypeId;
+    }
+
+    acc.paid = true;
+    acc.paymentDate = new Date();
+
+    await acc.save();
+    return acc;
+  }
+
+  async unreceive(id) {
+    const acc = await AccountsReceivable.findByPk(id);
+    if (!acc) {
+      const err = new Error('AccountsReceivable not found');
+      err.status = 404;
+      throw err;
+    }
+
+    if (!acc.paid) {
+      const err = new Error('This receivable is not marked as received');
+      err.status = 400;
+      throw err;
+    }
+
+    acc.paid = false;
+    acc.paymentDate = null;
+    acc.paymentTypeId = null;
+
+    await acc.save();
+    return acc;
+  }
+}
+
+module.exports = new AccountsReceivableService();
