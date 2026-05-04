@@ -27,6 +27,26 @@ const errorMiddleware = require('./middlewares/errorMiddleware');
 // Habilita o Express para receber requisições em JSON
 app.use(express.json());
 
+// CORS para permitir acesso do frontend local
+app.use((req, res, next) => {
+  const allowedOrigins = ['http://localhost:5173', 'http://127.0.0.1:5173'];
+  const origin = req.headers.origin;
+
+  if (origin && allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  }
+
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+
+  next();
+});
+
 // Middleware global para formatar respostas antes de enviar ao cliente
 app.use(responseMiddleware);
 

@@ -6,30 +6,75 @@ const SALT_ROUNDS = 10;
 
 async function init() {
   try {
-    // ---------- 1. Criar perfil padrão ----------
-    let defaultProfile = await Profile.findOne({ where: { name: 'Administrador Master' } });
-    if (!defaultProfile) {
-      defaultProfile = await Profile.create({
+    // ---------- 1. Criar perfis padrões ----------
+    let adminProfile = await Profile.findOne({ where: { name: 'Administrador Master' } });
+    if (!adminProfile) {
+      adminProfile = await Profile.create({
         name: 'Administrador Master',
         description: 'Perfil Administrador Master do Sistema',
         statusProfile: 1
       });
-      console.log('Perfil padrão criado!');
+      console.log('Perfil admin padrão criado!');
     }
 
-    // ---------- 2. Criar usuário admin ----------
-    let adminUser = await User.findOne({ where: { Login: 'admin' } });
-    if (!adminUser) {
-      const hashedPassword = await bcrypt.hash('123456', SALT_ROUNDS); // Senha inicial padrão
-      adminUser = await User.create({
+    let commonProfile = await Profile.findOne({ where: { name: 'Usuário Comum' } });
+    if (!commonProfile) {
+      commonProfile = await Profile.create({
+        name: 'Usuário Comum',
+        description: 'Perfil padrão de usuário comum',
+        statusProfile: 1
+      });
+      console.log('Perfil comum padrão criado!');
+    }
+
+    // ---------- 2. Criar usuários padrões ----------
+    const defaultUsers = [
+      {
         username: 'admin',
         name: 'Administrador',
-        password: hashedPassword,
+        password: '123456',
         active: 1,
-        profileId: defaultProfile.id
+        profileId: adminProfile.id
+      },
+      {
+        username: 'carlos',
+        name: 'Carlos Silva',
+        password: '123456',
+        active: 1,
+        profileId: commonProfile.id
+      },
+      {
+        username: 'maria',
+        name: 'Maria Santos',
+        password: '123456',
+        active: 1,
+        profileId: commonProfile.id
+      },
+      {
+        username: 'joao',
+        name: 'João Oliveira',
+        password: '123456',
+        active: 0,
+        profileId: commonProfile.id
+      }
+    ];
 
+    for (const defaultUser of defaultUsers) {
+      const existingUser = await User.findOne({ where: { username: defaultUser.username } });
+      if (existingUser) {
+        continue;
+      }
+
+      const hashedPassword = await bcrypt.hash(defaultUser.password, SALT_ROUNDS);
+      await User.create({
+        username: defaultUser.username,
+        name: defaultUser.name,
+        password: hashedPassword,
+        active: defaultUser.active,
+        profileId: defaultUser.profileId
       });
-      console.log('Usuário admin criado!');
+
+      console.log(`Usuário padrão '${defaultUser.username}' criado!`);
     }
 
     console.log('Seed inicial concluída!');

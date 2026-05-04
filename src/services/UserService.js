@@ -97,7 +97,10 @@ class UserService {
   }
 
   async login(username, password) {
-    const user = await User.findOne({ where: { username } });
+    const user = await User.findOne({
+      where: { username },
+      include: [{ model: Profile, as: 'profile' }]
+    });
 
     if (!user) {
       const error = new Error("Invalid username or password");
@@ -110,6 +113,12 @@ class UserService {
     if (!match) {
       const error = new Error("Invalid username or password");
       error.status = 401;
+      throw error;
+    }
+
+    if (Number(user.active) !== 1) {
+      const error = new Error("Inactive user");
+      error.status = 403;
       throw error;
     }
 
